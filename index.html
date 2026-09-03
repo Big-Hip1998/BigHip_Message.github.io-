@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <title>Supabase ルーム別チャットアプリ</title>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <style>
+    body { font-family: sans-serif; max-width: 600px; margin: 20px auto; padding: 0 10px; }
+    .hidden { display: none; }
+    .card { background: #f9f9f9; padding: 15px; border-radius: 8px; margin-bottom: 20px; border: 1px solid #ddd; }
+    .form-group { margin-bottom: 10px; }
+    input { padding: 8px; margin-right: 5px; margin-bottom: 5px; width: 220px; }
+    button { padding: 8px 12px; cursor: pointer; }
+    ul { list-style: none; padding: 0; }
+    li { background: #f4f4f4; margin-bottom: 8px; padding: 10px; border-radius: 4px; }
+    .meta { font-size: 0.8em; color: #666; margin-top: 4px; }
+    .user-info { display: flex; justify-content: space-between; align-items: center; }
+    .room-header { background: #eef6ff; padding: 10px; border-radius: 6px; margin-bottom: 15px; border: 1px solid #cce3ff; }
+  </style>
+</head>
+<body>
+  <h1>ルーム別チャットアプリ</h1>
+
+  <!-- 1. 未ログイン時：認証フォーム -->
+  <div id="auth-section" class="card">
+    <h2>ログイン / 新規登録</h2>
+    <div class="form-group">
+      <input type="text" id="username" placeholder="ユーザーネーム (新規登録時)"><br>
+      <input type="email" id="email" placeholder="メールアドレス"><br>
+      <input type="password" id="password" placeholder="パスワード(6文字以上)">
+    </div>
+    <button id="login-btn">ログイン</button>
+    <button id="signup-btn">新規アカウント作成</button>
+  </div>
+
+  <!-- 2. ログイン済み時：メインエリア -->
+  <div id="app-section" class="card hidden">
+    <div class="user-info">
+      <span>ログイン中: <strong id="current-username"></strong> さん</span>
+      <button id="logout-btn">ログアウト</button>
+    </div>
+    
+    <hr style="margin: 15px 0; border: none; border-top: 1px solid #ccc;">
+
+    <!-- 合言葉（ルーム選択）エリア -->
+    <div class="room-header">
+      <div class="form-group" style="margin-bottom: 0;">
+        <label>🔑 <strong>部屋の合言葉:</strong> </label>
+        <input type="text" id="room-input" placeholder="例: secret123" value="general" style="width: 150px;">
+        <button id="join-room-btn">入室 / 切替</button>
+      </div>
+      <small style="color: #666;">※ 同じ合言葉を入力した人同士だけで会話できます</small>
+    </div>
+
+    <!-- メッセージ送信エリア -->
+    <div class="form-group">
+      <input type="text" id="message-input" placeholder="メッセージを入力" style="width: 70%;">
+      <button id="send-btn">送信</button>
+    </div>
+
+    <h3>「<span id="current-room-name">general</span>」のメッセージ一覧</h3>
+    <ul id="message-list"></ul>
+  </div>
+
+  <script>
+    const SUPABASE_URL = 'https://pjatxvwtdjjgomnloyix.supabase.co';
+    const SUPABASE_ANON_KEY = 'sb_publishable_dHduHee4U2ie3L5VkoGh4g_N9OnKgvK';
+    const supabaseClient = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+    let currentUser = null;
+    let currentUsername = '名無し';
+    let currentRoom = 'general'; // デフォルトの合言葉（ルーム）
+
+    // --- 認証機能 ---
+
+    async function checkUser() {
+      const { data: { user } } = await supabaseClient.auth.getUser();
+      currentUser = user;
+
+      if (currentUser) {
+        currentUsername = currentUser.user_metadata?.username || currentUser.email.split('@')[0];
+        document.getElementById('auth-section').classList.add('hidden');
+        document.getElementById('app-section').classList.remove('hidden');
+        document.getElementById('current-username').textContent = currentUsername;
+        
+        fetchMessages(); // 初回のメッセージ取得
+      } else {
+        document.getElementById('auth-section').classList.remove('hidden');
+        document.getElementById('app-section').classList.add('hidden');
+      }
+    }
+
+    // 新規登録
+    document.getElementById('signup-btn').addEventListener('click', async () => {
+      const username = document.getElementById('username').value.trim();
+      const email = document.getElementById('email').value.trim();
+      const password = document.getElementById('password').value.trim();
+
+      if (!username) { alert('ユーザーネームを入力してください'); return; }
+
+      const { error } = await supabaseClient.auth.signUp({
+        email, password, options: { data: { username: username } }
+      });
+
+      if (error) { alert('登録エラー: ' + error.message); } 
+      else { alert('アカウントを作成しました！'); checkUser(); }
+    });
+
+    // ログイン
+    document.getElementById('login-btn').addEventListener('click', async () => {
+      const email = document.getElementById('email').value.trim();
+      const password = document.getElementById('password').value.trim();
+
+      const { error } = await supabaseClient.auth.signInWithPassword({ email, password });
+      if (error) { alert('ログインエラー: ' + error.message); } 
+      else { checkUser(); }
+    });
+
+    // ログアウト
+    document.getElementById('logout-btn').addEventListener('click', async () => {
+      await supabaseClient.auth.signOut();
+      currentUser = null;
+      checkUser();
+    });
+
+    // --- ルーム切り替え機能 ---
+
+    document.getElementById('join-room-btn').addEventListener('click', () => {
+      const roomInput = document.getElementById('room-input').value.trim();
+      if (!roomInput) {
+        alert('合言葉を入力してください');
+        return;
+      }
+      currentRoom = roomInput;
+      document.getElementById('current-room-name').textContent = currentRoom;
+      fetchMessages(); // 部屋を切り替えてメッセージを再取得
+    });
+
+    // --- メッセージ機能 ---
+
+    async function fetchMessages() {
+      // room_id が「現在の合言葉」と一致するものだけをフィルタリング（.eq('room_id', currentRoom)）
+      const { data, error } = await supabaseClient
+        .from('Message_Table')
+        .select('*')
+        .eq('room_id', currentRoom)
+        .order('created_at', { ascending: false });
+
+      if (error) {
+        console.error('取得エラー:', error);
+        return;
+      }
+
+      const listEl = document.getElementById('message-list');
+      listEl.innerHTML = '';
+
+      data.forEach(item => {
+        const li = document.createElement('li');
+        const date = item.created_at ? new Date(item.created_at).toLocaleString('ja-JP') : '';
+
+        li.innerHTML = `
+          <div><strong>${escapeHtml(item.send_user || '名無し')}</strong>: ${escapeHtml(item.send_message)}</div>
+          <div class="meta">${date}</div>
+        `;
+        listEl.appendChild(li);
+      });
+    }
+
+    // メッセージ送信時、room_id に現在の合言葉も含めて保存
+    document.getElementById('send-btn').addEventListener('click', async () => {
+      const msgEl = document.getElementById('message-input');
+      const sendMessage = msgEl.value.trim();
+
+      if (!sendMessage) {
+        alert('メッセージを入力してください');
+        return;
+      }
+
+      const { error } = await supabaseClient
+        .from('Message_Table')
+        .insert([
+          { 
+            send_message: sendMessage, 
+            send_user: currentUsername,
+            room_id: currentRoom // ← 合言葉を保存！
+          }
+        ]);
+
+      if (error) {
+        alert('送信に失敗しました');
+        console.error('挿入エラー:', error);
+      } else {
+        msgEl.value = '';
+        fetchMessages();
+      }
+    });
+
+    function escapeHtml(str) {
+      if (!str) return '';
+      return str.replace(/[&<>"']/g, (m) => {
+        return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#039;' }[m];
+      });
+    }
+
+    checkUser();
+  </script>
+</body>
+</html>
