@@ -6,7 +6,7 @@ const supabaseClient = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 let currentUser = null;
 let currentUsername = '名無し';
 let currentRoom = 'general';
-let messageSubscription = null; // リアルタイム購読用
+let messageSubscription = null; // リアルタイム監視用
 
 // --- UI要素取得 ---
 const authCard = document.getElementById('auth-card');
@@ -30,26 +30,36 @@ document.getElementById('logout-btn').addEventListener('click', handleLogout);
 document.getElementById('join-room-btn').addEventListener('click', handleJoinRoom);
 document.getElementById('send-btn').addEventListener('click', handleSendMessage);
 
+// Enterキーでの送信対応
 messageInput.addEventListener('keypress', (e) => {
   if (e.key === 'Enter') handleSendMessage();
 });
 
-// --- 認証状態の監視 ---
+// --- 認証状態のリアルタイム監視 ---
 supabaseClient.auth.onAuthStateChange((event, session) => {
   currentUser = session?.user || null;
+
   if (currentUser) {
     currentUsername = currentUser.user_metadata?.username || currentUser.email.split('@')[0];
+    
+    // UI表示の更新
     currentUsernameEl.textContent = currentUsername;
     userAvatarEl.textContent = currentUsername.charAt(0).toUpperCase();
     
     authCard.classList.add('hidden');
     appCard.classList.remove('hidden');
     
+    // ログイン完了後にチャットデータ取得＆リアルタイム接続を開始
     subscribeToMessages();
   } else {
     authCard.classList.remove('hidden');
     appCard.classList.add('hidden');
-    if (messageSubscription) supabaseClient.removeChannel(messageSubscription);
+    
+    // ログアウト時はリアルタイム接続を解除
+    if (messageSubscription) {
+      supabaseClient.removeChannel(messageSubscription);
+      messageSubscription = null;
+    }
   }
 });
 
@@ -68,8 +78,11 @@ async function handleSignUp() {
     options: { data: { username: username } }
   });
 
-  if (error) alert('登録エラー: ' + error.message);
-  else alert('アカウントを作成しました！確認メールをご確認ください（設定による）。');
+  if (error) {
+    alert('登録エラー: ' + error.message);
+  } else {
+    alert('アカウントを作成しました！');
+  }
 }
 
 // ログイン
@@ -80,7 +93,9 @@ async function handleLogin() {
   if (!email || !password) return alert('入力内容を確認してください');
 
   const { error } = await supabaseClient.auth.signInWithPassword({ email, password });
-  if (error) alert('ログインエラー: ' + error.message);
+  if (error) {
+    alert('ログインエラー: ' + error.message);
+  }
 }
 
 // ログアウト
@@ -95,20 +110,22 @@ function handleJoinRoom() {
   
   currentRoom = room;
   currentRoomNameEl.textContent = currentRoom;
+  
+  // 部屋を切り替えたら再度取得・購読設定
   subscribeToMessages();
 }
 
-// メッセージ取得 & リアルタイム受信設定
+// メッセージ取得およびリアルタイム受信（Supabase Realtime）
 async function subscribeToMessages() {
-  // 既存の購読解除
+  // 既存のチャネル購読があれば解除
   if (messageSubscription) {
     await supabaseClient.removeChannel(messageSubscription);
   }
 
-  // 初期メッセージ読み込み
+  // 初回の全メッセージ取得
   await fetchMessages();
 
-  // Realtimeリスナー接続
+  // ルームの新規投稿をリアルタイム監視
   messageSubscription = supabaseClient
     .channel(`room:${currentRoom}`)
     .on('postgres_changes', {
@@ -122,6 +139,7 @@ async function subscribeToMessages() {
     .subscribe();
 }
 
+// メッセージの一括取得
 async function fetchMessages() {
   const { data, error } = await supabaseClient
     .from('Message_Table')
@@ -135,11 +153,13 @@ async function fetchMessages() {
   }
 
   messageList.innerHTML = '';
-  data.forEach(appendMessage);
+  data.forEach(item => appendMessage(item));
 }
 
+// 画面へ1件メッセージを追加表示
 function appendMessage(item) {
-  const isMe = currentUser && item.user_id === currentUser.id;
+  // 自分が送信したメッセージかどうかの判定
+  const isMe = item.send_user === currentUsername;
   const date = item.created_at ? new Date(item.created_at).toLocaleTimeString('ja-JP', { hour: '2-digit', minute: '2-digit' }) : '';
 
   const msgEl = document.createElement('div');
@@ -150,10 +170,12 @@ function appendMessage(item) {
     <div class="msg-date">${date}</div>
   `;
   messageList.appendChild(msgEl);
+
+  // 新規投稿時に最下部へ自動スクロール
   messageList.scrollTop = messageList.scrollHeight;
 }
 
-// メッセージ送信（user_idを付与）
+// メッセージ送信
 async function handleSendMessage() {
   const sendMessage = messageInput.value.trim();
   if (!sendMessage || !currentUser) return;
@@ -164,20 +186,20 @@ async function handleSendMessage() {
       { 
         send_message: sendMessage, 
         send_user: currentUsername,
-        user_id: currentUser.id, // 送信者のUIDを確実に記録
         room_id: currentRoom 
       }
     ]);
 
   if (error) {
-    alert('送信に失敗しました');
+    alert('送信に失敗しました: ' + error.message);
     console.error('挿入エラー:', error);
   } else {
     messageInput.value = '';
+    // Realtime（subscribeToMessages）側で画面追加が検知されるため、ここでの再取得は不要です
   }
 }
 
-// XSS対策
+// XSS対策用 HTMLエスケープ関数
 function escapeHtml(str) {
   if (!str) return '';
   return str.replace(/[&<>"']/g, (m) => {
