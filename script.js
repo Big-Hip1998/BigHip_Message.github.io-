@@ -8,6 +8,13 @@ let currentUsername = '名無し';
 let currentRoom = 'general';
 let messageSubscription = null; // リアルタイム監視用
 
+// --- Service Worker の登録 (Android版Firefox等の背景通知対策) ---
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.register('./sw.js').catch((err) => {
+    console.log('Service Worker 登録失敗:', err);
+  });
+}
+
 // --- UI要素取得 ---
 const authCard = document.getElementById('auth-card');
 const appCard = document.getElementById('app-card');
@@ -34,6 +41,9 @@ document.getElementById('send-btn').addEventListener('click', handleSendMessage)
 messageInput.addEventListener('keypress', (e) => {
   if (e.key === 'Enter') handleSendMessage();
 });
+
+// ユーザー操作時に通知許可をリクエスト
+requestNotificationPermission();
 
 // --- 認証状態のリアルタイム監視 ---
 supabaseClient.auth.onAuthStateChange((event, session) => {
@@ -134,7 +144,16 @@ async function subscribeToMessages() {
       table: 'Message_Table',
       filter: `room_id=eq.${currentRoom}`
     }, (payload) => {
-      appendMessage(payload.new);
+      const newMsg = payload.new;
+      appendMessage(newMsg);
+
+      // 自分以外の送信かつ画面を開いていない（またはバックグラウンド）場合に通知
+      const isOtherUser = newMsg.send_user !== currentUsername;
+      const isBackground = document.hidden || !document.hasFocus();
+
+      if (isOtherUser && isBackground) {
+        showNotification(newMsg);
+      }
     })
     .subscribe();
 }
@@ -197,6 +216,43 @@ async function handleSendMessage() {
     messageInput.value = '';
     // Realtime（subscribeToMessages）側で画面追加が検知されるため、ここでの再取得は不要です
   }
+}
+
+// 通知権限の許可を要求する関数
+function requestNotificationPermission() {
+  if ('Notification' in window && Notification.permission === 'default') {
+    Notification.requestPermission();
+  }
+}
+
+// Web通知を表示する関数（Android / Firefox対応版）
+async function showNotification(msg) {
+  if (!('Notification' in window) || Notification.permission !== 'granted') return;
+
+  const title = `新着メッセージ (#${currentRoom})`;
+  const options = {
+    body: `${msg.send_user || '名無し'}: ${msg.send_message}`,
+    icon: '/favicon.ico',
+    tag: `room-${currentRoom}`,
+    renotify: true,
+    data: { url: window.location.href }
+  };
+
+  // Service Worker 経由で通知を送る (Android / Firefox 推奨)
+  if ('serviceWorker' in navigator) {
+    const registration = await navigator.serviceWorker.ready;
+    if (registration && registration.showNotification) {
+      registration.showNotification(title, options);
+      return;
+    }
+  }
+
+  // フォールバック: 通常の Notification API (PCブラウザ等)
+  const notification = new Notification(title, options);
+  notification.onclick = () => {
+    window.focus();
+    notification.close();
+  };
 }
 
 // XSS対策用 HTMLエスケープ関数
