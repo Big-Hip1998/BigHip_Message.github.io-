@@ -42,9 +42,6 @@ messageInput.addEventListener('keypress', (e) => {
   if (e.key === 'Enter') handleSendMessage();
 });
 
-// ユーザー操作時に通知許可をリクエスト
-requestNotificationPermission();
-
 // --- 認証状態のリアルタイム監視 ---
 supabaseClient.auth.onAuthStateChange((event, session) => {
   currentUser = session?.user || null;
@@ -91,6 +88,8 @@ async function handleSignUp() {
   if (error) {
     alert('登録エラー: ' + error.message);
   } else {
+    // 登録成功時に通知許可をリクエスト
+    await requestNotificationPermission();
     alert('アカウントを作成しました！');
   }
 }
@@ -105,6 +104,9 @@ async function handleLogin() {
   const { error } = await supabaseClient.auth.signInWithPassword({ email, password });
   if (error) {
     alert('ログインエラー: ' + error.message);
+  } else {
+    // ログイン成功時に通知許可をリクエスト
+    await requestNotificationPermission();
   }
 }
 
@@ -219,9 +221,9 @@ async function handleSendMessage() {
 }
 
 // 通知権限の許可を要求する関数
-function requestNotificationPermission() {
+async function requestNotificationPermission() {
   if ('Notification' in window && Notification.permission === 'default') {
-    Notification.requestPermission();
+    await Notification.requestPermission();
   }
 }
 
