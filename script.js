@@ -3,6 +3,9 @@ const SUPABASE_URL = 'https://pjatxvwtdjjgomnloyix.supabase.co';
 const SUPABASE_ANON_KEY = 'sb_publishable_dHduHee4U2ie3L5VkoGh4g_N9OnKgvK';
 const supabaseClient = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
+// Web Push 用の VAPID 公開鍵 (生成した Public Key をここに記載してください)
+const PUBLIC_VAPID_KEY = 'BGxI4WBNj_tIISNfPD3wsOPllp9zcTxpK1EuPzSsLKLsQv7V4xMjYzaZ6d9yCzONhh-PihUpb_jXEG7YXOocs5I';
+
 let currentUser = null;
 let currentUsername = '名無し';
 let currentRoom = 'general';
@@ -43,7 +46,7 @@ messageInput.addEventListener('keypress', (e) => {
 });
 
 // --- 認証状態のリアルタイム監視 ---
-supabaseClient.auth.onAuthStateChange((event, session) => {
+supabaseClient.auth.onAuthStateChange(async (event, session) => {
   currentUser = session?.user || null;
 
   if (currentUser) {
@@ -56,7 +59,8 @@ supabaseClient.auth.onAuthStateChange((event, session) => {
     authCard.classList.add('hidden');
     appCard.classList.remove('hidden');
     
-    // ログイン完了後にチャットデータ取得＆リアルタイム接続を開始
+    // Web Push 購読設定とデータ取得
+    await subscribeWebPush();
     subscribeToMessages();
   } else {
     authCard.classList.remove('hidden');
@@ -88,8 +92,6 @@ async function handleSignUp() {
   if (error) {
     alert('登録エラー: ' + error.message);
   } else {
-    // 登録成功時に通知許可をリクエスト
-    await requestNotificationPermission();
     alert('アカウントを作成しました！');
   }
 }
@@ -104,9 +106,6 @@ async function handleLogin() {
   const { error } = await supabaseClient.auth.signInWithPassword({ email, password });
   if (error) {
     alert('ログインエラー: ' + error.message);
-  } else {
-    // ログイン成功時に通知許可をリクエスト
-    await requestNotificationPermission();
   }
 }
 
@@ -148,14 +147,6 @@ async function subscribeToMessages() {
     }, (payload) => {
       const newMsg = payload.new;
       appendMessage(newMsg);
-
-      // 自分以外の送信かつ画面を開いていない（またはバックグラウンド）場合に通知
-      const isOtherUser = newMsg.send_user !== currentUsername;
-      const isBackground = document.hidden || !document.hasFocus();
-
-      if (isOtherUser && isBackground) {
-        showNotification(newMsg);
-      }
     })
     .subscribe();
 }
@@ -216,45 +207,65 @@ async function handleSendMessage() {
     console.error('挿入エラー:', error);
   } else {
     messageInput.value = '';
-    // Realtime（subscribeToMessages）側で画面追加が検知されるため、ここでの再取得は不要です
   }
 }
 
-// 通知権限の許可を要求する関数
-async function requestNotificationPermission() {
-  if ('Notification' in window && Notification.permission === 'default') {
-    await Notification.requestPermission();
+// Web Pushの購読登録とSupabaseへの保存
+async function subscribeWebPush() {
+  if (!('serviceWorker' in navigator) || !('PushManager' in window)) {
+    console.log('このブラウザは Push 通知に対応していません');
+    return;
   }
-}
 
-// Web通知を表示する関数（Android / Firefox対応版）
-async function showNotification(msg) {
-  if (!('Notification' in window) || Notification.permission !== 'granted') return;
+  try {
+    const permission = await Notification.requestPermission();
+    if (permission !== 'granted') return;
 
-  const title = `新着メッセージ (#${currentRoom})`;
-  const options = {
-    body: `${msg.send_user || '名無し'}: ${msg.send_message}`,
-    icon: '/favicon.ico',
-    tag: `room-${currentRoom}`,
-    renotify: true,
-    data: { url: window.location.href }
-  };
-
-  // Service Worker 経由で通知を送る (Android / Firefox 推奨)
-  if ('serviceWorker' in navigator) {
     const registration = await navigator.serviceWorker.ready;
-    if (registration && registration.showNotification) {
-      registration.showNotification(title, options);
-      return;
-    }
-  }
+    let subscription = await registration.pushManager.getSubscription();
 
-  // フォールバック: 通常の Notification API (PCブラウザ等)
-  const notification = new Notification(title, options);
-  notification.onclick = () => {
-    window.focus();
-    notification.close();
-  };
+    // 購読が存在しない場合は作成
+    if (!subscription && PUBLIC_VAPID_KEY !== 'YOUR_PUBLIC_VAPID_KEY_HERE') {
+      const convertedVapidKey = urlBase64ToUint8Array(PUBLIC_VAPID_KEY);
+      subscription = await registration.pushManager.subscribe({
+        userVisibleOnly: true,
+        applicationServerKey: convertedVapidKey
+      });
+    }
+
+    if (subscription && currentUser) {
+      // Supabaseの subscriptions テーブルに保存 (upsert)
+      const { error } = await supabaseClient
+        .from('subscriptions')
+        .upsert({
+          user_id: currentUser.id,
+          subscription: JSON.stringify(subscription),
+          updated_at: new Date().toISOString()
+        }, { onConflict: 'user_id' });
+
+      if (error) {
+        console.error('Subscription保存エラー:', error);
+      }
+    }
+  } catch (err) {
+    console.error('Web Push 登録処理エラー:', err);
+  }
+}
+
+// Base64URL文字列をUint8Arrayに変換するヘルパー関数
+function urlBase64ToUint8Array(base64String) {
+  const padding = '='.repeat((4 - base64String.length % 4) % 4);
+  const base64 = (base64String + padding)
+    .replace(/\-/g, '+')
+    .replace(/_/g, '/');
+
+  const rawData = window.atob(base64);
+  const outputArray = new Uint8Array(rawData.length);
+
+  for (let i = 0; i < rawData.length; ++i) {
+    outputArray[i] = rawData.charCodeAt(i);
+  }
+  return outputArray;
 }
 
 // XSS対策用 HTMLエスケープ関数
