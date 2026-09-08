@@ -4,7 +4,7 @@ const SUPABASE_ANON_KEY = 'sb_publishable_dHduHee4U2ie3L5VkoGh4g_N9OnKgvK';
 const supabaseClient = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
 // Web Push 用の VAPID 公開鍵
-const PUBLIC_VAPID_KEY = 'BGxI4WBNj_tIISNfPD3wsOPllp9zcTxpK1EuPzSsLKLsQv7V4xMjYzaZ6d9yCzONhh-PihUpb_jXEG7YXOocs5I';
+const PUBLIC_VAPID_KEY = 'BA214T9_Wu7RHw6lLfIPb67XgOXMoigkC7FNmViENEu4gZ8ccBJti86_mscUnnIdu6Nl3PVBVbPv19YG9JkuTGw';
 
 let currentUser = null;
 let currentUsername = '名無し';
