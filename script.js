@@ -3,15 +3,16 @@ const SUPABASE_URL = 'https://pjatxvwtdjjgomnloyix.supabase.co';
 const SUPABASE_ANON_KEY = 'sb_publishable_dHduHee4U2ie3L5VkoGh4g_N9OnKgvK';
 const supabaseClient = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
-// Web Push 用の VAPID 公開鍵 (生成した Public Key をここに記載してください)
+// Web Push 用の VAPID 公開鍵
 const PUBLIC_VAPID_KEY = 'BGxI4WBNj_tIISNfPD3wsOPllp9zcTxpK1EuPzSsLKLsQv7V4xMjYzaZ6d9yCzONhh-PihUpb_jXEG7YXOocs5I';
 
 let currentUser = null;
 let currentUsername = '名無し';
 let currentRoom = 'general';
 let messageSubscription = null; // リアルタイム監視用
+let selectedFile = null; // 選択画像保持用
 
-// --- Service Worker の登録 (Android版Firefox等の背景通知対策) ---
+// --- Service Worker の登録 ---
 if ('serviceWorker' in navigator) {
   navigator.serviceWorker.register('./sw.js').catch((err) => {
     console.log('Service Worker 登録失敗:', err);
@@ -33,6 +34,11 @@ const currentRoomNameEl = document.getElementById('current-room-name');
 const messageInput = document.getElementById('message-input');
 const messageList = document.getElementById('message-list');
 
+const imageInput = document.getElementById('image-input');
+const imagePreviewContainer = document.getElementById('image-preview-container');
+const imagePreview = document.getElementById('image-preview');
+const removeImageBtn = document.getElementById('remove-image-btn');
+
 // --- イベントリスナー設定 ---
 document.getElementById('login-btn').addEventListener('click', handleLogin);
 document.getElementById('signup-btn').addEventListener('click', handleSignUp);
@@ -43,6 +49,27 @@ document.getElementById('send-btn').addEventListener('click', handleSendMessage)
 // Enterキーでの送信対応
 messageInput.addEventListener('keypress', (e) => {
   if (e.key === 'Enter') handleSendMessage();
+});
+
+// 画像選択イベント
+imageInput.addEventListener('change', (e) => {
+  const file = e.target.files[0];
+  if (file) {
+    selectedFile = file;
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      imagePreview.src = event.target.result;
+      imagePreviewContainer.classList.remove('hidden');
+    };
+    reader.readAsDataURL(file);
+  }
+});
+
+// 選択画像キャンセル
+removeImageBtn.addEventListener('click', () => {
+  selectedFile = null;
+  imageInput.value = '';
+  imagePreviewContainer.classList.add('hidden');
 });
 
 // --- 認証状態のリアルタイム監視 ---
@@ -128,15 +155,12 @@ function handleJoinRoom() {
 
 // メッセージ取得およびリアルタイム受信（Supabase Realtime）
 async function subscribeToMessages() {
-  // 既存のチャネル購読があれば解除
   if (messageSubscription) {
     await supabaseClient.removeChannel(messageSubscription);
   }
 
-  // 初回の全メッセージ取得
   await fetchMessages();
 
-  // ルームの新規投稿をリアルタイム監視
   messageSubscription = supabaseClient
     .channel(`room:${currentRoom}`)
     .on('postgres_changes', {
@@ -168,37 +192,69 @@ async function fetchMessages() {
   data.forEach(item => appendMessage(item));
 }
 
-// 画面へ1件メッセージを追加表示
+// 画面へ1件メッセージを追加表示（テキスト・画像両対応）
 function appendMessage(item) {
-  // 自分が送信したメッセージかどうかの判定
   const isMe = item.send_user === currentUsername;
   const date = item.created_at ? new Date(item.created_at).toLocaleTimeString('ja-JP', { hour: '2-digit', minute: '2-digit' }) : '';
 
   const msgEl = document.createElement('div');
   msgEl.className = `chat-message ${isMe ? 'me' : 'other'}`;
+
+  let contentHtml = '';
+  if (item.send_message) {
+    contentHtml += `<div>${escapeHtml(item.send_message)}</div>`;
+  }
+  if (item.image_url) {
+    contentHtml += `<img src="${escapeHtml(item.image_url)}" class="msg-image" onclick="window.open('${escapeHtml(item.image_url)}', '_blank')" />`;
+  }
+
   msgEl.innerHTML = `
     <div class="msg-user">${escapeHtml(item.send_user || '名無し')}</div>
-    <div class="msg-bubble">${escapeHtml(item.send_message)}</div>
+    <div class="msg-bubble">${contentHtml}</div>
     <div class="msg-date">${date}</div>
   `;
   messageList.appendChild(msgEl);
 
-  // 新規投稿時に最下部へ自動スクロール
   messageList.scrollTop = messageList.scrollHeight;
 }
 
-// メッセージ送信
+// メッセージ＆画像送信
 async function handleSendMessage() {
   const sendMessage = messageInput.value.trim();
-  if (!sendMessage || !currentUser) return;
+  if ((!sendMessage && !selectedFile) || !currentUser) return;
 
+  let imageUrl = null;
+
+  // 1. 画像が選択されていれば Supabase Storage へアップロード
+  if (selectedFile) {
+    const fileExt = selectedFile.name.split('.').pop();
+    const filePath = `${currentRoom}/${Date.now()}_${Math.random().toString(36).substring(2)}.${fileExt}`;
+
+    const { data: uploadData, error: uploadError } = await supabaseClient.storage
+      .from('chat-images')
+      .upload(filePath, selectedFile);
+
+    if (uploadError) {
+      alert('画像のアップロードに失敗しました: ' + uploadError.message);
+      return;
+    }
+
+    const { data: urlData } = supabaseClient.storage
+      .from('chat-images')
+      .getPublicUrl(filePath);
+
+    imageUrl = urlData.publicUrl;
+  }
+
+  // 2. データベースへ保存
   const { error } = await supabaseClient
     .from('Message_Table')
     .insert([
       { 
         send_message: sendMessage, 
         send_user: currentUsername,
-        room_id: currentRoom 
+        room_id: currentRoom,
+        image_url: imageUrl
       }
     ]);
 
@@ -206,7 +262,11 @@ async function handleSendMessage() {
     alert('送信に失敗しました: ' + error.message);
     console.error('挿入エラー:', error);
   } else {
+    // フォーム初期化
     messageInput.value = '';
+    selectedFile = null;
+    imageInput.value = '';
+    imagePreviewContainer.classList.add('hidden');
   }
 }
 
@@ -224,7 +284,6 @@ async function subscribeWebPush() {
     const registration = await navigator.serviceWorker.ready;
     let subscription = await registration.pushManager.getSubscription();
 
-    // 購読が存在しない場合は作成
     if (!subscription && PUBLIC_VAPID_KEY !== 'YOUR_PUBLIC_VAPID_KEY_HERE') {
       const convertedVapidKey = urlBase64ToUint8Array(PUBLIC_VAPID_KEY);
       subscription = await registration.pushManager.subscribe({
@@ -234,7 +293,6 @@ async function subscribeWebPush() {
     }
 
     if (subscription && currentUser) {
-      // Supabaseの subscriptions テーブルに保存 (upsert)
       const { error } = await supabaseClient
         .from('subscriptions')
         .upsert({

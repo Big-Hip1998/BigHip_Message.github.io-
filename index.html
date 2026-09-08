@@ -67,8 +67,16 @@
       <!-- メッセージ表示エリア -->
       <div class="chat-body" id="message-list"></div>
 
+      <!-- 画像プレビュー表示領域 -->
+      <div id="image-preview-container" class="image-preview-container hidden">
+        <img id="image-preview" src="" alt="Preview">
+        <button id="remove-image-btn" type="button">×</button>
+      </div>
+
       <!-- 送信フォーム -->
       <div class="chat-footer">
+        <label for="image-input" class="btn btn-secondary btn-sm image-upload-label" title="画像を添付">📷</label>
+        <input type="file" id="image-input" accept="image/*" class="hidden">
         <input type="text" id="message-input" placeholder="メッセージを入力...">
         <button id="send-btn" class="btn btn-primary">送信</button>
       </div>
