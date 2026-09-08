@@ -27,7 +27,7 @@ self.addEventListener('push', (event) => {
     icon: data.icon || '/favicon.ico',
     tag: data.tag || 'general-message',
     renotify: true,
-    data: { url: data.url || self.location.origin }
+    data: { url: 'https://big-hip1998.github.io/BigHip_Message.github.io-/' }
   };
 
   event.waitUntil(
@@ -40,19 +40,19 @@ self.addEventListener('notificationclick', (event) => {
   // タップされた通知を閉じる
   event.notification.close();
 
-  // クリック時に既存のタブを開いてフォーカスするか、なければ新規タブでページを開く
+  const targetUrl = 'https://big-hip1998.github.io/BigHip_Message.github.io-/';
+
   event.waitUntil(
     clients.matchAll({ type: 'window', includeUncontrolled: true }).then((clientList) => {
-      // 既にアプリのタブが開いている場合はそのタブにフォーカスする
+      // 既に該当ページが開いている場合はそのタブにフォーカスする
       for (const client of clientList) {
-        if ('focus' in client) {
+        if (client.url === targetUrl && 'focus' in client) {
           return client.focus();
         }
       }
-      // タブが開いていない場合は指定されたURL（またはトップページ）を新規で開く
+      // 開いていない場合は指定されたURLを新規で開く
       if (clients.openWindow) {
-        const urlToOpen = event.notification.data?.url || '/';
-        return clients.openWindow(urlToOpen);
+        return clients.openWindow(targetUrl);
       }
     })
   );
